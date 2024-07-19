@@ -1,12 +1,13 @@
 import sys
 import mysql.connector
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QDialog,
     QListWidgetItem, QLabel, QPushButton, QLineEdit, QMessageBox, QComboBox
 )
 from PySide6.QtGui import QColor, QFont, QIcon
 from PySide6.QtCore import Qt
 from dialog_digit import DialogoDigitalizacao
+from dialog_marcar_correcao import DialogMarcarCorrecao
 
 class TelaListarLivros(QWidget):
     def __init__(self, db_config, nome_completo, nivel_acesso):
@@ -25,7 +26,7 @@ class TelaListarLivros(QWidget):
                 background-color: #333;
                 color: #FFF;
             }
-            QLabel, QPushButton, QLineEdit, QComboBox {
+            QLabel, QDialog, QPushButton, QLineEdit, QComboBox {
                 font-size: 14px;
                 font-weight: bold;
                 border: 2px solid #555;
@@ -81,6 +82,17 @@ class TelaListarLivros(QWidget):
         self.lista_termos = QListWidget()
         self.lista_termos.itemClicked.connect(self.marcar_como_digitalizado)
         main_layout.addWidget(self.lista_termos)
+
+        # Botoes de marcar
+        botao_layout = QVBoxLayout()
+        self.botao_marcar = QPushButton('Marcar para Correção')
+        self.botao_marcar.clicked.connect(self.marcar_para_correcao)
+        botao_layout.addWidget(self.botao_marcar)
+
+        self.botao_resolver = QPushButton('Marcar como Resolvido')
+        self.botao_resolver.clicked.connect(self.marcar_como_resolvido)
+        botao_layout.addWidget(self.botao_resolver)
+        main_layout.addLayout(botao_layout)
 
         self.carregar_livros()
 
@@ -186,6 +198,27 @@ class TelaListarLivros(QWidget):
             item.setData(1000, termo[0])
             self.lista_termos.addItem(item)
         conn.close()
+
+    def marcar_para_correcao(self):
+        item_selecionado = self.lista_livros.currentItem()
+        if item_selecionado:
+            dialog = DialogMarcarCorrecao(item_selecionado)
+            dialog.exec_()
+            if dialog.result() == QDialog.Accepted:
+                item_selecionado.setBackground(Qt.red)
+                item_selecionado.setData(Qt.UserRole, dialog.mensagem)
+                item_selecionado.setData(Qt.UserRole + 1, 'marcado')
+
+    def marcar_como_resolvido(self):
+        item_selecionado = self.lista_livros.currentItem()
+        if item_selecionado and item_selecionado.data(Qt.UserRole + 1) == 'marcado':
+            responsavel = item_selecionado.data(Qt.UserRole + 2)  # Supondo que o responsável está armazenado nessa chave
+            if self.controller.usuario_atual == responsavel:
+                item_selecionado.setBackground(Qt.green)
+                item_selecionado.setData(Qt.UserRole + 1, 'resolvido')
+                item_selecionado.setData(Qt.UserRole, None)
+            else:
+                QMessageBox.warning(self, 'Permissão Negada', 'Você não tem permissão para marcar este item como resolvido.')
 
     def marcar_como_digitalizado(self, item):
         termo_id = item.data(1000)
