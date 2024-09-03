@@ -172,7 +172,7 @@ class GerenciamentoUsuarios(QWidget):
         self.userList.clear()
         conn = mysql.connector.connect(**self.db_config)
         cursor = conn.cursor()
-        cursor.execute("SELECT id_usuario, nome_usuario FROM usuarios")
+        cursor.execute("SELECT id_usuario, nome_usuario FROM usuarios ORDER BY nome_usuario ASC")
         for user_id, username in cursor.fetchall():
             item = QListWidgetItem(f"{username}")
             item.setData(Qt.UserRole, user_id)

@@ -8,6 +8,7 @@ from PySide6.QtGui import QColor, QFont, QIcon
 from PySide6.QtCore import Qt
 from dialog_digit import DialogoDigitalizacao
 from dialog_marcar_correcao import DialogMarcarCorrecao
+from dialog_mensagem import DialogoMensagem
 
 class TelaListarLivros(QWidget):
     def __init__(self, db_config, nome_completo, nivel_acesso):
@@ -92,6 +93,7 @@ class TelaListarLivros(QWidget):
         self.botao_resolver = QPushButton('Marcar como Resolvido')
         self.botao_resolver.clicked.connect(self.marcar_como_resolvido)
         botao_layout.addWidget(self.botao_resolver)
+
         main_layout.addLayout(botao_layout)
 
         self.carregar_livros()
@@ -134,9 +136,11 @@ class TelaListarLivros(QWidget):
         query = f"""
         SELECT Livros.id, Livros.tipo, Livros.numero, 
             CASE 
-                WHEN SUM(CASE WHEN Folhas.digitalizada = 0 THEN 1 ELSE 0 END) = 0 THEN 'Completamente Digitalizado'
+                WHEN COUNT(Folhas.id) = SUM(Folhas.digitalizada) THEN 'Completamente Digitalizado'
                 ELSE 'Parcialmente Digitalizado'
-            END AS digitalizacao_status
+            END AS digitalizacao_status,
+            COUNT(CASE WHEN Folhas.marcado = TRUE THEN 1 END) as folhas_marcadas,
+            COUNT(Folhas.id) as total_folhas
         FROM Livros
         LEFT JOIN Folhas ON Livros.id = Folhas.id_livro
         WHERE Livros.tipo LIKE %s AND Livros.numero LIKE %s AND Livros.tipo IN ({','.join(['%s'] * len(tipos_permitidos))})
@@ -149,6 +153,13 @@ class TelaListarLivros(QWidget):
             item.setData(1000, livro[0])
             if livro[3] == 'Completamente Digitalizado':
                 item.setBackground(QColor("#006400"))
+            elif livro[3] == 'Parcialmente Digitalizado':
+                item.setBackground(QColor("#FFD700"))
+            if livro[4] == livro[5] and livro[5] > 0:  # Todas as folhas marcadas
+                item.setBackground(QColor("#FF6347"))
+            elif livro[4] > 0:  # Apenas algumas folhas marcadas
+                item.setBackground(QColor("#FF8C00"))
+
             self.lista_livros.addItem(item)
         conn.close()
 
@@ -164,7 +175,8 @@ class TelaListarLivros(QWidget):
             CASE 
                 WHEN SUM(CASE WHEN Termos.digitalizado = 0 THEN 1 ELSE 0 END) = 0 THEN 'Completamente Digitalizado'
                 ELSE 'Digitalizar'
-            END AS digitalizacao_status
+            END AS digitalizacao_status,
+            Folhas.marcado
         FROM Folhas
         LEFT JOIN Termos ON Folhas.id = Termos.id_folha
         WHERE Folhas.id_livro = %s AND Folhas.numero_folha LIKE %s
@@ -176,6 +188,8 @@ class TelaListarLivros(QWidget):
             item.setData(1000, folha[0])
             if folha[2] == 'Completamente Digitalizado':
                 item.setBackground(QColor("#006400"))
+            if folha[3]:  # Folha marcada
+                item.setBackground(QColor("#FF6347"))
             self.lista_folhas.addItem(item)
         conn.close()
 
@@ -200,29 +214,140 @@ class TelaListarLivros(QWidget):
         conn.close()
 
     def marcar_para_correcao(self):
-        item_selecionado = self.lista_livros.currentItem()
+        if self.nivel_acesso != 'Admin':
+            QMessageBox.warning(self, 'Permissão Negada', 'Apenas usuários Admin podem marcar livros ou folhas.')
+            return
+
+        item_selecionado = self.lista_folhas.currentItem()
         if item_selecionado:
-            dialog = DialogMarcarCorrecao(item_selecionado)
-            dialog.exec_()
-            if dialog.result() == QDialog.Accepted:
-                item_selecionado.setBackground(Qt.red)
-                item_selecionado.setData(Qt.UserRole, dialog.mensagem)
-                item_selecionado.setData(Qt.UserRole + 1, 'marcado')
+            dialog = DialogoMensagem()
+            if dialog.exec_() == QDialog.Accepted:
+                mensagem = dialog.get_mensagem()
+                folha_id = item_selecionado.data(1000)
+                self.marcar_folha(folha_id, mensagem)
+        else:
+            item_selecionado = self.lista_livros.currentItem()
+            if item_selecionado:
+                dialog = DialogoMensagem()
+                if dialog.exec_() == QDialog.Accepted:
+                    mensagem = dialog.get_mensagem()
+                    livro_id = item_selecionado.data(1000)
+                    self.marcar_livro(livro_id, mensagem)
+
+    def marcar_folha(self, folha_id, mensagem):
+        conn = mysql.connector.connect(**self.db_config)
+        cursor = conn.cursor()
+
+        # Atualizar a folha como marcada
+        cursor.execute("UPDATE Folhas SET marcado = TRUE WHERE id = %s", (folha_id,))
+        conn.commit()
+
+        # Enviar notificação ao usuário responsável
+        cursor.execute("""
+        SELECT usuario_modificacao, numero_folha, Folhas.id_livro
+        FROM Termos 
+        JOIN Folhas ON Termos.id_folha = Folhas.id 
+        WHERE Folhas.id = %s LIMIT 1
+        """, (folha_id,))
+        resultado = cursor.fetchone()
+        responsavel, numero_folha, id_livro = resultado[0], resultado[1], resultado[2]
+
+        if responsavel:
+            cursor.execute("SELECT numero FROM Livros WHERE id = %s", (id_livro,))
+            numero_livro = cursor.fetchone()[0]
+            remetente = f"O livro {numero_livro} foi marcado na folha {numero_folha}"
+
+            query = """
+            INSERT INTO Notificacoes (remetente, destinatario, mensagem, data_envio, lida)
+            VALUES (%s, %s, %s, NOW(), FALSE)
+            """
+            cursor.execute(query, (remetente, responsavel, mensagem))
+            conn.commit()
+
+        conn.close()
+        self.carregar_livros()
+
+    def marcar_livro(self, livro_id, mensagem):
+        conn = mysql.connector.connect(**self.db_config)
+        cursor = conn.cursor()
+
+        # Atualizar todas as folhas do livro como marcadas
+        cursor.execute("UPDATE Folhas SET marcado = TRUE WHERE id_livro = %s", (livro_id,))
+        conn.commit()
+
+        # Enviar notificação ao usuário responsável
+        cursor.execute("""
+        SELECT DISTINCT usuario_modificacao, Livros.numero 
+        FROM Termos 
+        JOIN Folhas ON Termos.id_folha = Folhas.id 
+        JOIN Livros ON Folhas.id_livro = Livros.id
+        WHERE Folhas.id_livro = %s 
+        """, (livro_id,))
+        responsaveis = cursor.fetchall()
+        for responsavel, numero_livro in responsaveis:
+            if responsavel:
+                remetente = f"O livro {numero_livro} foi marcado todo"
+                query = """
+                INSERT INTO Notificacoes (remetente, destinatario, mensagem, data_envio, lida)
+                VALUES (%s, %s, %s, NOW(), FALSE)
+                """
+                cursor.execute(query, (remetente, responsavel, mensagem))
+                conn.commit()
+
+        conn.close()
+        self.carregar_livros()
 
     def marcar_como_resolvido(self):
-        item_selecionado = self.lista_livros.currentItem()
-        if item_selecionado and item_selecionado.data(Qt.UserRole + 1) == 'marcado':
-            responsavel = item_selecionado.data(Qt.UserRole + 2)  # Supondo que o responsável está armazenado nessa chave
-            if self.controller.usuario_atual == responsavel:
-                item_selecionado.setBackground(Qt.green)
-                item_selecionado.setData(Qt.UserRole + 1, 'resolvido')
-                item_selecionado.setData(Qt.UserRole, None)
-            else:
-                QMessageBox.warning(self, 'Permissão Negada', 'Você não tem permissão para marcar este item como resolvido.')
+        item_selecionado = self.lista_folhas.currentItem()
+        if item_selecionado:
+            folha_id = item_selecionado.data(1000)
+            self.desmarcar_folha(folha_id)
+        else:
+            item_selecionado = self.lista_livros.currentItem()
+            if item_selecionado:
+                livro_id = item_selecionado.data(1000)
+                self.desmarcar_livro(livro_id)
+
+    def desmarcar_folha(self, folha_id):
+        conn = mysql.connector.connect(**self.db_config)
+        cursor = conn.cursor()
+
+        # Verificar o responsável pela folha
+        cursor.execute("SELECT usuario_modificacao FROM Termos WHERE id_folha = %s LIMIT 1", (folha_id,))
+        responsavel = cursor.fetchone()[0]
+        if self.usuario_atual != responsavel:
+            QMessageBox.warning(self, 'Permissão Negada', 'Você não tem permissão para desmarcar esta folha.')
+            return
+
+        # Atualizar a folha como desmarcada
+        cursor.execute("UPDATE Folhas SET marcado = FALSE WHERE id = %s", (folha_id,))
+        conn.commit()
+        conn.close()
+        self.carregar_livros()
+
+    def desmarcar_livro(self, livro_id):
+        conn = mysql.connector.connect(**self.db_config)
+        cursor = conn.cursor()
+
+        # Verificar o responsável por pelo menos uma folha do livro
+        cursor.execute("""
+        SELECT DISTINCT usuario_modificacao 
+        FROM Termos 
+        WHERE id_folha IN (SELECT id FROM Folhas WHERE id_livro = %s) 
+        """, (livro_id,))
+        responsaveis = cursor.fetchall()
+        if not any(responsavel[0] == self.usuario_atual for responsavel in responsaveis):
+            QMessageBox.warning(self, 'Permissão Negada', 'Você não tem permissão para desmarcar este livro.')
+            return
+
+        # Atualizar todas as folhas do livro como desmarcadas
+        cursor.execute("UPDATE Folhas SET marcado = FALSE WHERE id_livro = %s", (livro_id,))
+        conn.commit()
+        conn.close()
+        self.carregar_livros()
 
     def marcar_como_digitalizado(self, item):
         termo_id = item.data(1000)
-        # Armazenando os índices selecionados antes da atualização
         current_book_index = self.lista_livros.currentRow()
         current_folha_index = self.lista_folhas.currentRow()
         current_termo_index = self.lista_termos.currentRow()
@@ -230,10 +355,21 @@ class TelaListarLivros(QWidget):
         dialogo = DialogoDigitalizacao(self, termo_id, self.usuario_atual)
         dialogo.exec_()
 
-        # Recarregando todos os dados
+        # Verificar e atualizar o status da folha
+        conn = mysql.connector.connect(**self.db_config)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id_folha FROM Termos WHERE id = %s", (termo_id,))
+        id_folha = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT SUM(digitalizado) = COUNT(*) FROM Termos WHERE id_folha = %s", (id_folha,))
+        todos_digitalizados = cursor.fetchone()[0]
+        
+        cursor.execute("UPDATE Folhas SET digitalizada = %s WHERE id = %s", (todos_digitalizados, id_folha))
+        conn.commit()
+        conn.close()
+
         self.carregar_livros()
 
-        # Restaurando a seleção anterior
         if current_book_index != -1:
             self.lista_livros.setCurrentRow(current_book_index)
             self.mostrar_folhas(self.lista_livros.currentItem(), None)

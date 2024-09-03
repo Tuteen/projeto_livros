@@ -1,6 +1,6 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QMessageBox, QApplication, QHeaderView, QLineEdit, QCheckBox)
-from PySide6.QtGui import QColor, QFont, QIcon
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QMessageBox, QApplication, QHeaderView, QLineEdit, QCheckBox, QSystemTrayIcon, QMenu)
+from PySide6.QtGui import QColor, QIcon
+from PySide6.QtCore import Qt, QTimer
 import mysql.connector
 from datetime import datetime, date
 from certidoes import GerenciamentoCertidoes
@@ -24,7 +24,10 @@ class ListaCertidoes(QWidget):
         self.db_config = db_config
         self.usuario_atual = usuario_atual
         self.nome_completo = nome_completo
+        self.last_row_count = self.obter_quantidade_certidoes()  # Inicializa com a quantidade atual de certidões
         self.initUI()
+        self.setup_tray_icon()
+        self.setup_timer()
 
     def initUI(self):
         self.setWindowTitle('Lista de Certidões Solicitadas')
@@ -90,6 +93,38 @@ class ListaCertidoes(QWidget):
         main_layout.addWidget(self.table_certidoes)
 
         self.carregar_certidoes()
+
+    def setup_tray_icon(self):
+        self.tray_icon = QSystemTrayIcon(QIcon('logo.png'), self)
+        tray_menu = QMenu(self)
+        restore_action = tray_menu.addAction("Restore")
+        restore_action.triggered.connect(self.show)
+        quit_action = tray_menu.addAction("Quit")
+        quit_action.triggered.connect(QApplication.instance().quit)
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.show()
+
+    def setup_timer(self):
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.verificar_novas_solicitacoes)
+        self.timer.start(30000)  # Verificar a cada 30 segundos
+
+    def verificar_novas_solicitacoes(self):
+        current_row_count = self.obter_quantidade_certidoes()
+        if current_row_count > self.last_row_count:
+            self.carregar_certidoes()
+            self.last_row_count = current_row_count
+            if not self.isActiveWindow() or self.isMinimized():
+                self.tray_icon.showMessage("Nova Solicitação", "Há uma nova solicitação de certidão.", QSystemTrayIcon.Information, 5000)
+                QApplication.alert(self)
+
+    def obter_quantidade_certidoes(self):
+        conn = mysql.connector.connect(**self.db_config)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM Certidoes")
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
 
     def abrir_solicitacao_certidao(self):
         self.solicitar_certidao = GerenciamentoCertidoes(self.db_config, self.usuario_atual, self.nome_completo)
@@ -157,6 +192,6 @@ if __name__ == "__main__":
     import sys
     app = QApplication(sys.argv)
     db_config = {'host': 'localhost', 'user': 'your_username', 'password': 'your_password', 'database': 'your_database_name'}
-    window = ListaCertidoes(db_config, "usuario1")
+    window = ListaCertidoes(db_config, "usuario1", "Nome Completo")
     window.show()
     sys.exit(app.exec_())

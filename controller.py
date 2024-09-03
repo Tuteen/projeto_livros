@@ -12,6 +12,8 @@ from gerenciar_usuarios import GerenciamentoUsuarios
 from editar_perfil import EditarPerfil
 from marcar_lote import MarcarEmLote
 from lista_certidoes import ListaCertidoes
+from relatorios import ModuloRelatorios
+from notificacoes import SistemaNotificacoes
 
 class AppController:
     def __init__(self, app):
@@ -112,6 +114,10 @@ class AppController:
             self.tela_editar_perfil.close()
         self.tela_editar_perfil = EditarPerfil(usuario, db_config=self.db_config)
         self.tela_editar_perfil.show()
+    
+    def show_notificacoes(self, usuario):
+        self.notificacoes = SistemaNotificacoes(db_config=self.db_config, usuario_atual=self.nome_completo)
+        self.notificacoes.show()
 
     def show_gerenciar_usuarios(self):
         self.gerenciar_usuarios = GerenciamentoUsuarios(db_config=self.db_config)
@@ -124,6 +130,10 @@ class AppController:
     def show_listar_certidoes(self, usuario, nome_completo):
         self.listar_certidoes = ListaCertidoes(db_config=self.db_config, usuario_atual=self.usuario_atual, nome_completo=self.nome_completo)
         self.listar_certidoes.show()
+
+    def show_relatorios(self):
+        self.relatorios = ModuloRelatorios(self.db_config)
+        self.relatorios.show()
 
     def run(self):
         sys.exit(self.app.exec())
